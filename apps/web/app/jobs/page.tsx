@@ -36,14 +36,7 @@ export default function JobsPage() {
         <div className="flex items-center gap-4">
           <a
             href="/"
-            className="flex items-center gap-2 text-sm font-medium transition-colors duration-150"
-            style={{ color: "var(--color-text-muted)" }}
-            onMouseEnter={(e) =>
-              ((e.currentTarget as HTMLAnchorElement).style.color = "var(--color-text-primary)")
-            }
-            onMouseLeave={(e) =>
-              ((e.currentTarget as HTMLAnchorElement).style.color = "var(--color-text-muted)")
-            }
+            className="flex items-center gap-2 text-sm font-medium transition-colors duration-150 text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]"
           >
             ← Back
           </a>
