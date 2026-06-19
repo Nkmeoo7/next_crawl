@@ -1,0 +1,59 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Models ─────────────────────────────────────────────────────────────────
+
+model Job {
+  id          String    @id @default(uuid())
+  type        String    // "scrape" | "crawl"
+  status      String    @default("queued") // "queued" | "running" | "completed" | "failed"
+  startUrl    String
+  totalPages  Int?      // null until link discovery is complete (crawl only)
+  pagesDone   Int       @default(0)
+  createdAt   DateTime  @default(now())
+  completedAt DateTime?
+
+  pages Page[]
+
+  @@map("jobs")
+}
+
+model Page {
+  id           String    @id @default(uuid())
+  jobId        String
+  url          String
+  status       String    // "success" | "failed"
+  html         String?   // raw HTML (Phase 1); may be large — consider trimming in future
+  markdown     String?   // clean markdown (Phase 2+)
+  title        String?
+  errorCode    String?   // ErrorCode enum value (null on success)
+  errorMessage String?
+  fromCache    Boolean   @default(false)
+  scrapedAt    DateTime  @default(now())
+  durationMs   Int?
+
+  job Job @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@index([jobId])
+  @@index([url])
+  @@map("pages")
+}
+
+model ErrorLog {
+  id         String   @id @default(uuid())
+  pageId     String
+  errorCode  String
+  rawMessage String
+  createdAt  DateTime @default(now())
+
+  @@map("error_logs")
+}
