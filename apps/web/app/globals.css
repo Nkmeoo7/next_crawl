@@ -217,6 +217,11 @@ body {
     color: var(--color-cache-hit);
     border: 1px solid oklch(65% 0.18 200 / 0.3);
   }
+  .badge-warning {
+    background: var(--color-warning-bg);
+    color: var(--color-warning);
+    border: 1px solid oklch(72% 0.18 75 / 0.3);
+  }
   .badge-loading {
     background: var(--color-surface-2);
     color: var(--color-text-muted);

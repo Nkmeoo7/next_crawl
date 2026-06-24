@@ -3,6 +3,10 @@
 import { useState, useRef, useCallback } from "react";
 import { ErrorCode } from "@nextcrawl/shared";
 import type { ScrapeResult } from "@nextcrawl/shared";
+import { chunkContent } from "./lib/chunker";
+import { buildXml, downloadXml, buildFilename } from "./lib/export";
+import type { RagChunk } from "./lib/chunker";
+import type { DocumentEntry } from "./lib/export";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -105,19 +109,144 @@ function ErrorCard({ data }: { data: Extract<ScrapeResult, { status: "error" }> 
   );
 }
 
+// ─── RAG Chunk Viewer ─────────────────────────────────────────────────────────
+
+function RagChunkViewer({ chunks, chunkSize, overlapPct }: { chunks: RagChunk[]; chunkSize: number; overlapPct: number }) {
+  const [expanded, setExpanded] = useState<number | null>(0);
+
+  return (
+    <div className="space-y-3 animate-fade-in-up">
+      {/* Stats bar */}
+      <div
+        className="flex items-center gap-4 px-4 py-2.5 rounded-lg text-xs font-mono flex-wrap"
+        style={{ background: "var(--color-surface-2)", border: "1px solid var(--color-border-subtle)" }}
+      >
+        <span style={{ color: "var(--color-text-brand)" }}>
+          🧩 {chunks.length} chunks
+        </span>
+        <span style={{ color: "var(--color-text-muted)" }}>·</span>
+        <span style={{ color: "var(--color-text-secondary)" }}>
+          ~{chunkSize} tokens target
+        </span>
+        <span style={{ color: "var(--color-text-muted)" }}>·</span>
+        <span style={{ color: "var(--color-text-secondary)" }}>
+          {Math.round(overlapPct * 100)}% overlap
+        </span>
+        <span style={{ color: "var(--color-text-muted)" }}>·</span>
+        <span style={{ color: "var(--color-text-secondary)" }}>
+          cl100k_base tokenizer
+        </span>
+      </div>
+
+      {/* Chunk list */}
+      <div className="space-y-2" style={{ maxHeight: "480px", overflowY: "auto" }}>
+        {chunks.map((chunk) => (
+          <div
+            key={chunk.index}
+            className="rounded-lg border transition-colors duration-150 cursor-pointer"
+            style={{
+              border: expanded === chunk.index
+                ? "1px solid oklch(65% 0.22 270 / 0.5)"
+                : "1px solid var(--color-border-subtle)",
+              background: expanded === chunk.index
+                ? "oklch(65% 0.22 270 / 0.05)"
+                : "var(--color-surface-2)",
+            }}
+            onClick={() => setExpanded(expanded === chunk.index ? null : chunk.index)}
+          >
+            {/* Chunk header */}
+            <div className="flex items-center justify-between px-4 py-2.5 gap-3">
+              <div className="flex items-center gap-2.5">
+                <span
+                  className="text-xs font-mono font-bold px-2 py-0.5 rounded"
+                  style={{ background: "oklch(65% 0.22 270 / 0.15)", color: "var(--color-text-brand)" }}
+                >
+                  #{chunk.index + 1}
+                </span>
+                <span className="text-xs" style={{ color: "var(--color-text-muted)" }}>
+                  {chunk.tokenCount.toLocaleString()} tokens · {chunk.charCount.toLocaleString()} chars
+                </span>
+              </div>
+              <svg
+                className="w-3.5 h-3.5 transition-transform duration-150"
+                style={{
+                  color: "var(--color-text-muted)",
+                  transform: expanded === chunk.index ? "rotate(180deg)" : "rotate(0deg)",
+                }}
+                viewBox="0 0 20 20" fill="currentColor"
+              >
+                <path fillRule="evenodd" d="M5.22 8.22a.75.75 0 0 1 1.06 0L10 11.94l3.72-3.72a.75.75 0 1 1 1.06 1.06l-4.25 4.25a.75.75 0 0 1-1.06 0L5.22 9.28a.75.75 0 0 1 0-1.06Z" clipRule="evenodd" />
+              </svg>
+            </div>
+
+            {/* Chunk content */}
+            {expanded === chunk.index && (
+              <div
+                className="px-4 pb-4 pt-1 border-t text-xs font-mono leading-relaxed whitespace-pre-wrap"
+                style={{
+                  borderColor: "oklch(65% 0.22 270 / 0.2)",
+                  color: "var(--color-text-secondary)",
+                  maxHeight: "200px",
+                  overflowY: "auto",
+                }}
+              >
+                {chunk.content}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─── RAG Mode Toggle ──────────────────────────────────────────────────────────
+
+function RagToggle({ enabled, onToggle }: { enabled: boolean; onToggle: () => void }) {
+  return (
+    <button
+      id="rag-mode-toggle"
+      onClick={onToggle}
+      aria-pressed={enabled}
+      className="flex items-center gap-2 text-xs px-3 py-1.5 rounded-full transition-all duration-200 font-semibold"
+      style={{
+        background: enabled ? "oklch(65% 0.22 270 / 0.18)" : "var(--color-surface-3)",
+        border: enabled ? "1px solid oklch(65% 0.22 270 / 0.5)" : "1px solid var(--color-border-subtle)",
+        color: enabled ? "var(--color-text-brand)" : "var(--color-text-muted)",
+        boxShadow: enabled ? "0 0 12px oklch(65% 0.22 270 / 0.2)" : "none",
+      }}
+    >
+      <span
+        className="w-2 h-2 rounded-full transition-colors duration-200"
+        style={{ background: enabled ? "var(--color-text-brand)" : "var(--color-text-muted)" }}
+      />
+      RAG Mode
+    </button>
+  );
+}
+
 // ─── Main Page ─────────────────────────────────────────────────────────────────
 
 export default function HomePage() {
   const [url, setUrl] = useState("");
   const [state, setState] = useState<ScrapeState>({ phase: "idle" });
   const [copied, setCopied] = useState(false);
+  const [ragMode, setRagMode] = useState(false);
+  const [ragChunks, setRagChunks] = useState<RagChunk[] | null>(null);
+  const [isChunking, setIsChunking] = useState(false);
+  const [exportingXml, setExportingXml] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  const RAG_CHUNK_SIZE = 1000;
+  const RAG_OVERLAP = 0.1;
 
   const handleScrape = useCallback(async (targetUrl: string) => {
     const trimmed = targetUrl.trim();
     if (!trimmed) return;
 
     setState({ phase: "loading" });
+    setRagChunks(null);
+    setRagMode(false);
 
     try {
       const res = await fetch(`${API_URL}/scrape`, {
@@ -159,10 +288,50 @@ export default function HomePage() {
 
   const handleCopy = async () => {
     if (state.phase !== "success") return;
-    const content = state.data.html ?? "";
+    let content: string;
+    if (ragMode && ragChunks) {
+      content = JSON.stringify(ragChunks, null, 2);
+    } else {
+      content = state.data.html ?? "";
+    }
     await navigator.clipboard.writeText(content);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleRagToggle = async () => {
+    if (state.phase !== "success") return;
+    const next = !ragMode;
+    setRagMode(next);
+    if (next && !ragChunks) {
+      setIsChunking(true);
+      // Defer to next tick so UI updates before the blocking tiktoken call
+      setTimeout(async () => {
+        const content = state.data.html ?? "";
+        const chunks = chunkContent(content, RAG_CHUNK_SIZE, RAG_OVERLAP);
+        setRagChunks(chunks);
+        setIsChunking(false);
+      }, 0);
+    }
+  };
+
+  const handleExportXml = async () => {
+    if (state.phase !== "success") return;
+    setExportingXml(true);
+    try {
+      const doc: DocumentEntry = {
+        url: state.data.url,
+        normalizedUrl: state.data.normalizedUrl,
+        title: state.data.title,
+        content: state.data.html ?? "",
+        scrapedAt: state.data.scrapedAt,
+      };
+      const xml = buildXml([doc]);
+      const filename = buildFilename(state.data.normalizedUrl, "xml");
+      downloadXml(xml, filename);
+    } finally {
+      setExportingXml(false);
+    }
   };
 
   const successData = state.phase === "success" ? state.data : null;
@@ -216,11 +385,10 @@ export default function HomePage() {
         </div>
 
         <nav className="flex items-center gap-2">
-          <a
-            href="/jobs"
-            className="btn-ghost text-xs"
-            id="nav-jobs"
-          >
+          <a href="/batch" className="btn-ghost text-xs" id="nav-batch">
+            Batch
+          </a>
+          <a href="/jobs" className="btn-ghost text-xs" id="nav-jobs">
             Jobs
           </a>
           <a
@@ -384,8 +552,8 @@ export default function HomePage() {
                   )}
                 </div>
 
-                {/* Right side meta */}
-                <div className="flex items-center gap-4">
+                {/* Right side actions */}
+                <div className="flex items-center gap-2 flex-wrap">
                   {state.phase === "success" && (
                     <>
                       <span
@@ -394,13 +562,30 @@ export default function HomePage() {
                       >
                         {state.data.durationMs}ms
                       </span>
+
+                      {/* RAG Mode toggle */}
+                      <RagToggle enabled={ragMode} onToggle={handleRagToggle} />
+
+                      {/* Export for AI button */}
+                      <button
+                        id="export-xml-btn"
+                        onClick={handleExportXml}
+                        disabled={exportingXml}
+                        className="btn-ghost text-xs py-1 px-2.5"
+                        aria-label="Export as AI Project Context (XML)"
+                        title="Download as Claude/ChatGPT-optimized XML"
+                      >
+                        {exportingXml ? "Exporting…" : "⬇ Export for AI"}
+                      </button>
+
+                      {/* Copy button */}
                       <button
                         id="copy-btn"
                         onClick={handleCopy}
                         className="btn-ghost text-xs py-1 px-2.5"
                         aria-label="Copy output"
                       >
-                        {copied ? "✓ Copied" : "Copy"}
+                        {copied ? "✓ Copied" : ragMode ? "Copy JSON" : "Copy"}
                       </button>
                     </>
                   )}
@@ -436,46 +621,76 @@ export default function HomePage() {
                     )}
                   </div>
 
-                  {/* HTML output */}
-                  <div>
-                    <div className="flex items-center justify-between mb-2">
-                      <p
-                        className="text-xs font-semibold uppercase tracking-wider"
-                        style={{ color: "var(--color-text-muted)" }}
-                      >
-                        Raw HTML{" "}
-                        <span style={{ color: "var(--color-text-muted)", fontWeight: 400 }}>
-                          ({Math.round((state.data.html?.length ?? 0) / 1024)}KB)
+                  {/* RAG Mode — chunk viewer */}
+                  {ragMode ? (
+                    <div>
+                      <div className="flex items-center justify-between mb-3">
+                        <p
+                          className="text-xs font-semibold uppercase tracking-wider"
+                          style={{ color: "var(--color-text-muted)" }}
+                        >
+                          RAG Chunks
+                        </p>
+                        <span
+                          className="text-xs px-2 py-0.5 rounded font-mono"
+                          style={{ background: "var(--color-surface-3)", color: "var(--color-text-brand)" }}
+                        >
+                          cl100k_base · {RAG_CHUNK_SIZE} tok · {Math.round(RAG_OVERLAP * 100)}% overlap
                         </span>
-                      </p>
-                      <span
-                        className="text-xs px-2 py-0.5 rounded font-mono"
-                        style={{
-                          background: "var(--color-surface-3)",
-                          color: "var(--color-text-muted)",
-                        }}
-                      >
-                        Phase 1 · Markdown in Phase 2
-                      </span>
+                      </div>
+                      {isChunking ? (
+                        <div className="flex items-center gap-3 py-8 justify-center">
+                          <div className="w-5 h-5 rounded-full border-2 border-[var(--color-brand)] border-t-transparent animate-spin-slow" />
+                          <span className="text-sm" style={{ color: "var(--color-text-muted)" }}>
+                            Tokenizing content…
+                          </span>
+                        </div>
+                      ) : ragChunks ? (
+                        <RagChunkViewer chunks={ragChunks} chunkSize={RAG_CHUNK_SIZE} overlapPct={RAG_OVERLAP} />
+                      ) : null}
                     </div>
-                    <div className="output-panel">
-                      <pre className="p-5 text-xs overflow-auto" style={{ maxHeight: "400px" }}>
-                        <code>{state.data.html?.slice(0, 8000)}</code>
-                        {(state.data.html?.length ?? 0) > 8000 && (
-                          <div
-                            className="mt-3 pt-3 border-t text-xs"
-                            style={{
-                              borderColor: "var(--color-border-subtle)",
-                              color: "var(--color-text-muted)",
-                            }}
-                          >
-                            … {Math.round(((state.data.html?.length ?? 0) - 8000) / 1024)}KB more
-                            (truncated for display)
-                          </div>
-                        )}
-                      </pre>
+                  ) : (
+                    /* Raw HTML output */
+                    <div>
+                      <div className="flex items-center justify-between mb-2">
+                        <p
+                          className="text-xs font-semibold uppercase tracking-wider"
+                          style={{ color: "var(--color-text-muted)" }}
+                        >
+                          Raw HTML{" "}
+                          <span style={{ color: "var(--color-text-muted)", fontWeight: 400 }}>
+                            ({Math.round((state.data.html?.length ?? 0) / 1024)}KB)
+                          </span>
+                        </p>
+                        <span
+                          className="text-xs px-2 py-0.5 rounded font-mono"
+                          style={{
+                            background: "var(--color-surface-3)",
+                            color: "var(--color-text-muted)",
+                          }}
+                        >
+                          Phase 1 · Markdown in Phase 2
+                        </span>
+                      </div>
+                      <div className="output-panel">
+                        <pre className="p-5 text-xs overflow-auto" style={{ maxHeight: "400px" }}>
+                          <code>{state.data.html?.slice(0, 8000)}</code>
+                          {(state.data.html?.length ?? 0) > 8000 && (
+                            <div
+                              className="mt-3 pt-3 border-t text-xs"
+                              style={{
+                                borderColor: "var(--color-border-subtle)",
+                                color: "var(--color-text-muted)",
+                              }}
+                            >
+                              … {Math.round(((state.data.html?.length ?? 0) - 8000) / 1024)}KB more
+                              (truncated for display)
+                            </div>
+                          )}
+                        </pre>
+                      </div>
                     </div>
-                  </div>
+                  )}
                 </div>
               )}
             </div>
@@ -501,14 +716,24 @@ export default function HomePage() {
                 desc: "Playwright renders SPAs, waits for DOM — handles React, Vue, Angular out of the box.",
               },
               {
+                icon: "🧩",
+                title: "RAG Mode",
+                desc: "Toggle RAG Mode to chunk content into token-precise JSON arrays with overlap — ready for any LLM pipeline.",
+              },
+              {
+                icon: "📦",
+                title: "AI Export",
+                desc: "Export scraped pages as Claude/ChatGPT-optimized XML bundles with rich metadata attributes.",
+              },
+              {
+                icon: "🗺️",
+                title: "Batch Mode",
+                desc: "Paste a root URL, pick from discovered sitemap pages, and scrape up to 10 at once with live SSE progress.",
+              },
+              {
                 icon: "🛡️",
                 title: "Typed Errors",
                 desc: "Every failure maps to a code: DNS_FAILURE, BOT_BLOCKED, JS_TIMEOUT — plus a fix suggestion.",
-              },
-              {
-                icon: "🤖",
-                title: "robots.txt",
-                desc: "Respects robots.txt by default. Credibility over capability.",
               },
             ].map((feat) => (
               <div

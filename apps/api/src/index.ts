@@ -1,7 +1,10 @@
 import "dotenv/config";
 import express from "express";
 import { closeBrowser } from "./scraper/scrape";
+import { closeSitemapBrowser } from "./lib/sitemap";
 import scrapeRouter from "./routes/scrape";
+import sitemapRouter from "./routes/sitemap";
+import batchRouter from "./routes/batch";
 
 const app = express();
 const PORT = parseInt(process.env.PORT ?? "3001", 10);
@@ -30,6 +33,8 @@ app.get("/health", (_req, res) => {
 });
 
 app.use("/scrape", scrapeRouter);
+app.use("/sitemap", sitemapRouter);
+app.use("/batch", batchRouter);
 
 // 404 handler
 app.use((_req, res) => {
@@ -37,7 +42,7 @@ app.use((_req, res) => {
     status: "error",
     errorCode: "NOT_FOUND",
     errorMessage: "This endpoint does not exist.",
-    suggestion: "Available endpoints: GET /health, POST /scrape",
+    suggestion: "Available endpoints: GET /health, POST /scrape, GET /sitemap, POST /batch/scrape",
   });
 });
 
@@ -55,6 +60,7 @@ async function shutdown(signal: string) {
   console.log(`\n[${signal}] Shutting down gracefully...`);
   server.close(async () => {
     await closeBrowser();
+    await closeSitemapBrowser();
     console.log("Browser closed. Goodbye.");
     process.exit(0);
   });
